@@ -16,19 +16,26 @@
 
 ## Установка
 
+Зависимости и окружение управляются [uv](https://github.com/astral-sh/uv):
+
 ```console
-pip install -r requirements.txt
+uv sync
 ```
+
+Это создаст `.venv/` с зафиксированными в `uv.lock` версиями (включая
+dev-зависимости: pytest, ruff, coverage).
 
 ## Запуск
 
 Запуск — из корня проекта (там, где лежит папка `speedtest/`):
 
 ```console
-python -m speedtest
-python -m speedtest https://example.com/big-image.jpg
-python -m speedtest --requests 5 --concurrency 4 https://example.com/big-image.jpg
+uv run speedtest
+uv run speedtest https://example.com/big-image.jpg
+uv run speedtest --requests 5 --concurrency 4 https://example.com/big-image.jpg
 ```
+
+То же самое без uv: `python -m speedtest` (нужны зависимости из `[project]`).
 
 По умолчанию используется тестовый файл **ровно 100 000 000 байт** на CDN CacheFly (общий для бенчмарков):
 
@@ -144,15 +151,16 @@ speedtest/            # CLI-пакет
 ├── core.py           # скачивание, AIMD, расчёты (без I/O в консоль)
 └── cli.py            # argparse, отчёт, запуск
 tests/                # pytest: aimd, метрики, скачивание через локальный сервер
-pyproject.toml        # конфиг ruff и pytest
+pyproject.toml        # проект: метаданные, зависимости, конфиг ruff/pytest/coverage
+uv.lock               # зафиксированные версии всех зависимостей
 ```
 
 ## Тестирование
 
 ```console
-python -m pytest -q
-python -m pytest --cov=speedtest --cov-report=term-missing   # покрытие
-python -m pytest --cov=speedtest --cov-report=html           # подробный HTML-отчёт
+uv run pytest -q
+uv run pytest --cov=speedtest --cov-report=term-missing   # покрытие
+uv run pytest --cov=speedtest --cov-report=html           # подробный HTML-отчёт
 ```
 
 Тесты не ходят в интернет: HTTP-сценарии разворачиваются на локальном
@@ -161,10 +169,10 @@ python -m pytest --cov=speedtest --cov-report=html           # подробны�
 ## Разработка
 
 ```console
-pip install pytest ruff coverage pytest-cov
-python -m ruff format .
-python -m ruff check speedtest tests
-python -m pytest -q
+uv sync
+uv run ruff format speedtest tests
+uv run ruff check speedtest tests
+uv run pytest -q
 ```
 
 Линтеры: ruff с наборами правил `E, F, B, I, UP, D, SIM, C4, RUF, PT`

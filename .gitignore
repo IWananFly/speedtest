@@ -1,6 +1,7 @@
 .idea/
 __pycache__/
 *.pyc
+*.egg-info/
 .venv/
 .pytest_cache/
 .ruff_cache/
