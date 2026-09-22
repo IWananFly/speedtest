@@ -7,28 +7,10 @@ from argparse import Namespace
 from io import StringIO
 
 import pytest
-from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 import speedtest.cli as cli
 from speedtest.core import BenchmarkOutcome, DownloadResult, WaveProgress
-
-BODY = b"y" * 4096
-
-
-def build_app() -> web.Application:
-    """Приложение с маршрутами /ok и /perm для e2e-прогона main()."""
-    app = web.Application()
-
-    async def ok_handler(request: web.Request) -> web.Response:
-        return web.Response(body=BODY)
-
-    async def permanent_handler(request: web.Request) -> web.Response:
-        return web.Response(status=400)
-
-    app.router.add_get("/ok", ok_handler)
-    app.router.add_get("/perm", permanent_handler)
-    return app
 
 
 def test_render_report_mixed_results():
@@ -148,7 +130,7 @@ def test_start_line_content():
     assert line.startswith("старт замера:")
     assert "10 закачек" in line
     assert "от 2 до 10" in line
-    assert "до 3 попыток/закачка" in line
+    assert "максимум 3 попытки на закачку" in line
     assert "http://example.test/file.bin" in line
 
 
@@ -157,6 +139,34 @@ def test_start_line_caps_parallelism_by_requests():
     args = Namespace(url="http://example.test", requests=4, concurrency=1, attempts=1)
 
     assert "от 1 до 4" in cli._start_line(args)
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [
+        (1, "1 закачка"),
+        (2, "2 закачки"),
+        (4, "4 закачки"),
+        (5, "5 закачек"),
+        (11, "11 закачек"),
+        (12, "12 закачек"),
+        (21, "21 закачка"),
+        (22, "22 закачки"),
+        (101, "101 закачка"),
+    ],
+)
+def test_plural_picks_russian_form(n, expected):
+    """Русская плюрализация: 1/2-4/5+, с исключением для 11-14."""
+    assert f"{n} {cli._plural(n, ('закачка', 'закачки', 'закачек'))}" == expected
+
+
+def test_start_line_singular_nouns():
+    """При единице числа формы согласуются («1 закачка», «1 попытка»)."""
+    args = Namespace(url="http://example.test", requests=1, concurrency=1, attempts=1)
+    line = cli._start_line(args)
+
+    assert "1 закачка" in line
+    assert "максимум 1 попытка на закачку" in line
 
 
 @pytest.mark.parametrize(
@@ -250,14 +260,14 @@ class NonTtyStream(StringIO):
 
 
 def run_main_with_server(
-    monkeypatch, path: str, quiet: bool = False
+    monkeypatch, app, path: str, quiet: bool = False
 ) -> tuple[int, str]:
     """Гоняет cli.main() против локального сервера и возвращает (rc, stderr)."""
     stderr = NonTtyStream()
     monkeypatch.setattr(sys, "stderr", stderr)
 
     async def runner() -> int:
-        server = TestServer(build_app())
+        server = TestServer(app)
         await server.start_server()
         try:
             url = str(server.make_url(path))
@@ -282,9 +292,9 @@ def run_main_with_server(
     return asyncio.run(runner()), stderr.getvalue()
 
 
-def test_main_success_prints_report(monkeypatch, capsys):
+def test_main_success_prints_report(monkeypatch, capsys, app):
     """Успешный прогон возвращает 0, печатает отчёт и прогресс волн."""
-    rc, stderr = run_main_with_server(monkeypatch, "/ok")
+    rc, stderr = run_main_with_server(monkeypatch, app, "/ok")
     captured = capsys.readouterr().out
 
     assert rc == 0
@@ -296,18 +306,18 @@ def test_main_success_prints_report(monkeypatch, capsys):
     assert "волна 2:" in stderr
 
 
-def test_main_all_failed_returns_one(monkeypatch, capsys):
+def test_main_all_failed_returns_one(monkeypatch, capsys, app):
     """Подряд фейлы дают код возврата 1."""
-    rc, _ = run_main_with_server(monkeypatch, "/perm")
+    rc, _ = run_main_with_server(monkeypatch, app, "/perm")
     captured = capsys.readouterr().out
 
     assert rc == 1
     assert "успешно: 0 / 2" in captured
 
 
-def test_main_quiet_hides_progress(monkeypatch, capsys):
+def test_main_quiet_hides_progress(monkeypatch, capsys, app):
     """Тихий режим убирает живые строки прогресса из stderr."""
-    rc, stderr = run_main_with_server(monkeypatch, "/ok", quiet=True)
+    rc, stderr = run_main_with_server(monkeypatch, app, "/ok", quiet=True)
     captured = capsys.readouterr().out
 
     assert rc == 0
@@ -378,13 +388,28 @@ def test_progress_line_all_ok():
     assert cli._progress_line(progress) == "волна 3: 3/3 ok · 512.3 Мбит/с · cwnd 4→5"
 
 
+def test_progress_line_uses_wave_counts_not_cumulative():
+    """Дробь ok — по текущей волне, даже если накопительный итог больше."""
+    progress = make_wave_progress(2, 1, 0, done_requests=4)
+    assert "1/1 ok" in cli._progress_line(progress)
+    assert "1/4" not in cli._progress_line(progress)
+
+
 def test_progress_line_with_failures():
-    """При ошибках статус перечисляет успешные и упавшие закачки."""
+    """При ошибках статус перечисляет успешные и упавшие закачки волны."""
     progress = make_wave_progress(2, 2, 1)
     assert (
         cli._progress_line(progress)
-        == "волна 2: 2 ok, 1 ошиб · 512.3 Мбит/с · cwnd 4→5"
+        == "волна 2: 2 ok, 1 ошибка · 512.3 Мбит/с · cwnd 4→5"
     )
+
+
+def test_progress_line_failure_plural():
+    """Форма слова «ошибка» согласуется с числом падений."""
+    progress = make_wave_progress(1, 1, 3)
+    assert "3 ошибки" in cli._progress_line(progress)
+    progress = make_wave_progress(1, 1, 5)
+    assert "5 ошибок" in cli._progress_line(progress)
 
 
 def test_make_progress_writer_disabled_returns_none():
@@ -403,7 +428,7 @@ def test_make_progress_writer_writes_lines_when_not_live():
 
     assert stream.getvalue() == (
         "волна 1: 3/3 ok · 512.3 Мбит/с · cwnd 4→5\n"
-        "волна 2: 2 ok, 1 ошиб · 512.3 Мбит/с · cwnd 4→5\n"
+        "волна 2: 2 ok, 1 ошибка · 512.3 Мбит/с · cwnd 4→5\n"
     )
 
 

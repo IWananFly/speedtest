@@ -1,14 +1,10 @@
 """Скачивание через локальный aiohttp.TestServer — без внешней сети."""
 
-import asyncio
 import email.utils
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import aiohttp
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from speedtest.core import (
     RetryableDownloadError,
@@ -17,72 +13,20 @@ from speedtest.core import (
     run_adaptive_benchmark,
 )
 
-BODY = b"x" * 2048
 
-
-def build_app() -> web.Application:
-    """Собирает приложение с маршрутами: ок, 400, 500, 429+Retry-After, short read."""
-    app = web.Application()
-
-    async def ok_handler(request: web.Request) -> web.Response:
-        return web.Response(body=BODY)
-
-    async def permanent_handler(request: web.Request) -> web.Response:
-        return web.Response(status=400)
-
-    async def retryable_handler(request: web.Request) -> web.Response:
-        return web.Response(status=500)
-
-    async def rate_limited_handler(request: web.Request) -> web.Response:
-        return web.Response(status=429, headers={"Retry-After": "2"})
-
-    async def short_read_handler(request: web.Request) -> web.Response:
-        response = web.StreamResponse(headers={"Content-Length": "100"})
-        await response.prepare(request)
-        await response.write(b"abc")
-        request.transport.close()
-        return response
-
-    app.router.add_get("/ok", ok_handler)
-    app.router.add_get("/perm", permanent_handler)
-    app.router.add_get("/retry", retryable_handler)
-    app.router.add_get("/rate", rate_limited_handler)
-    app.router.add_get("/short", short_read_handler)
-    return app
-
-
-def run_with_server(
-    scenario: Callable[[aiohttp.ClientSession, str], Awaitable],
-    path: str,
-) -> object:
-    """Запускает async-сценарий с локальным тестовым сервером."""
-
-    async def runner() -> object:
-        server = TestServer(build_app())
-        await server.start_server()
-        try:
-            url = str(server.make_url(path))
-            async with aiohttp.ClientSession() as session:
-                return await scenario(session, url)
-        finally:
-            await server.close()
-
-    return asyncio.run(runner())
-
-
-def test_full_download_succeeds():
+def test_full_download_succeeds(run_with_server, body):
     """Успешная закачка: все байты получены, ошибок нет."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
         result = await _core_download(session, url, 5.0, 5.0)
         assert result.is_ok is True
-        assert result.bytes_downloaded == len(BODY)
+        assert result.bytes_downloaded == len(body)
         assert result.error is None
 
     run_with_server(scenario, "/ok")
 
 
-def test_permanent_http_status_returns_failure_without_retry():
+def test_permanent_http_status_returns_failure_without_retry(run_with_server):
     """Постоянный 4xx возвращается как результат-ошибка, а не исключение."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -93,7 +37,7 @@ def test_permanent_http_status_returns_failure_without_retry():
     run_with_server(scenario, "/perm")
 
 
-def test_retryable_http_status_raises():
+def test_retryable_http_status_raises(run_with_server):
     """Временные 5xx возбуждают RetryableDownloadError."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -103,7 +47,7 @@ def test_retryable_http_status_raises():
         run_with_server(scenario, "/retry")
 
 
-def test_short_read_raises_client_error():
+def test_short_read_raises_client_error(run_with_server):
     """Недокачанное тело возбуждает aiohttp.ClientError (короткое чтение)."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -113,7 +57,7 @@ def test_short_read_raises_client_error():
         run_with_server(scenario, "/short")
 
 
-def test_rate_limit_carries_retry_after():
+def test_rate_limit_carries_retry_after(run_with_server):
     """429 с Retry-After: исключение хранит секунды ожидания."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -143,7 +87,7 @@ def test_parse_retry_after_garbage():
     assert _parse_retry_after(None) is None
 
 
-def test_full_benchmark_over_local_server():
+def test_full_benchmark_over_local_server(run_with_server, body):
     """Полный замер на локальном сервере отдаёт все результаты и агрегаты."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -159,13 +103,13 @@ def test_full_benchmark_over_local_server():
         assert len(outcome.results) == 2
         assert all(result.is_ok for result in outcome.results)
         assert outcome.cwnd_start == 1
-        assert outcome.stable_bytes == 2 * len(BODY)
+        assert outcome.stable_bytes == 2 * len(body)
         assert outcome.stable_wall_seconds > 0
 
     run_with_server(scenario, "/ok")
 
 
-def test_parallel_wave_uses_wall_span_not_sum_of_durations():
+def test_parallel_wave_uses_wall_span_not_sum_of_durations(run_with_server, body):
     """Агрегат меняется по span, а не сумме длительностей параллельной волны."""
 
     async def scenario(session: aiohttp.ClientSession, url: str):
@@ -181,9 +125,9 @@ def test_parallel_wave_uses_wall_span_not_sum_of_durations():
         assert len(outcome.results) == 4
         assert all(result.is_ok for result in outcome.results)
         durations = [result.duration_seconds for result in outcome.results]
-        # 4 закачки летят параллельно: span ≪ сумма индивидуальных длительностей.
+        # 4 закачки летят параллельно: span ≪ суммы индивидуальных длительностей.
         assert outcome.stable_wall_seconds * 2 < sum(durations)
-        assert outcome.stable_bytes == 4 * len(BODY)
+        assert outcome.stable_bytes == 4 * len(body)
 
     run_with_server(scenario, "/ok")
 

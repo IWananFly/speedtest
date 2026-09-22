@@ -268,8 +268,13 @@ async def _core_download(
         Результат успешной закачки или 4xx-отказа.
 
     Raises:
-        RetryableDownloadError: На временный HTTP-статус (408/429/5xx) или
-            короткое чтение (``size != Content-Length``).
+        RetryableDownloadError: На временный HTTP-статус (408/429/5xx) с
+            подсказкой ``Retry-After``, если сервер её прислал.
+        aiohttp.ClientPayloadError: На короткое чтение — обрыв соединения
+            до получения всех байт (``size != Content-Length``); является
+            ``aiohttp.ClientError``, т.е. ретраится. Ветка ``size !=
+            Content-Length`` в конце — страховка на случай, если соединение
+            закрылось «чисто», без исключения из aiohttp.
     """
     timeout = aiohttp.ClientTimeout(
         total=None,
@@ -351,8 +356,10 @@ async def run_wave(
 ) -> list[DownloadResult]:
     """Запускает ``count`` параллельных закачек с ограничением ``concurrency``.
 
-    Все закачки стартуют фактически одновременно (через ``asyncio.gather``);
-    каждая считается своей отдельной волной если ``count == concurrency``.
+    Все закачки стартуют одновременно (``asyncio.gather``); семафор держит не
+    более ``concurrency`` активных соединений, если ``count > concurrency``.
+    Из ``run_adaptive_benchmark`` всегда приходит ``count == concurrency``
+    (волна целиком в рамках своего ``cwnd``).
 
     Args:
         session: Клиентская aiohttp-сессия.
@@ -380,7 +387,7 @@ async def run_wave(
     )
     for index, result in enumerate(results):
         if isinstance(result, Exception):
-            results[index] = DownloadResult(0, 0, 0.0, False, repr(result))
+            results[index] = DownloadResult(0, 0, 0.0, False, repr(result), 1)
     return results
 
 
@@ -459,10 +466,12 @@ async def run_adaptive_benchmark(
         Итоги замера: все результаты и агрегаты стабильной фазы.
 
     Raises:
-        ValueError: Если ``requests < 1``.
+        ValueError: Если ``requests < 1`` или ``attempts < 1``.
     """
     if requests < 1:
         raise ValueError("requests must be >= 1")
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
 
     results: list[DownloadResult] = []
     cwnd = max(1, start_cwnd)
@@ -543,7 +552,7 @@ async def run_adaptive_benchmark(
         )
 
         if stable_min_request_id == 0 and not step.is_improved and not step.is_degraded:
-            stable_min_request_id = results[0].request_id
+            stable_min_request_id = wave_start_request_ids[-1]
 
         cwnd = step.new_cwnd
         cwnd_max = max(cwnd_max, cwnd)

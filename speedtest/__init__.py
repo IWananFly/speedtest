@@ -5,18 +5,20 @@ from speedtest.core import (
     BenchmarkOutcome,
     DownloadResult,
     RetryableDownloadError,
+    WaveProgress,
     aimd_next,
     compute_mbps,
     run_adaptive_benchmark,
 )
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 __all__ = [
     "AimdStep",
     "BenchmarkOutcome",
     "DownloadResult",
     "RetryableDownloadError",
+    "WaveProgress",
     "aimd_next",
     "compute_mbps",
     "run_adaptive_benchmark",

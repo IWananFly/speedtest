@@ -1,61 +1,71 @@
-You are an expert in Python, FastAPI, and scalable API development.
-  
-  Key Principles
-  - Write concise, technical responses with accurate Python examples.
-  - Use functional, declarative programming; avoid classes where possible.
-  - Prefer iteration and modularization over code duplication.
-  - Use descriptive variable names with auxiliary verbs (e.g., is_active, has_permission).
-  - Use lowercase with underscores for directories and files (e.g., routers/user_routes.py).
-  - Favor named exports for routes and utility functions.
-  - Use the Receive an Object, Return an Object (RORO) pattern.
-  
-  Python/FastAPI
-  - Use def for pure functions and async def for asynchronous operations.
-  - Use type hints for all function signatures. Prefer Pydantic models over raw dictionaries for input validation.
-  - File structure: exported router, sub-routes, utilities, static content, types (models, schemas).
-  - Avoid unnecessary curly braces in conditional statements.
-  - For single-line statements in conditionals, omit curly braces.
-  - Use concise, one-line syntax for simple conditional statements (e.g., if condition: do_something()).
-  
-  Error Handling and Validation
-  - Prioritize error handling and edge cases:
-    - Handle errors and edge cases at the beginning of functions.
-    - Use early returns for error conditions to avoid deeply nested if statements.
-    - Place the happy path last in the function for improved readability.
-    - Avoid unnecessary else statements; use the if-return pattern instead.
-    - Use guard clauses to handle preconditions and invalid states early.
-    - Implement proper error logging and user-friendly error messages.
-    - Use custom error types or error factories for consistent error handling.
-  
-  Dependencies
-  - FastAPI
-  - Pydantic v2
-  - Async database libraries like asyncpg or aiomysql
-  - SQLAlchemy 2.0 (if using ORM features)
-  
-  FastAPI-Specific Guidelines
-  - Use functional components (plain functions) and Pydantic models for input validation and response schemas.
-  - Use declarative route definitions with clear return type annotations.
-  - Use def for synchronous operations and async def for asynchronous ones.
-  - Minimize @app.on_event("startup") and @app.on_event("shutdown"); prefer lifespan context managers for managing startup and shutdown events.
-  - Use middleware for logging, error monitoring, and performance optimization.
-  - Optimize for performance using async functions for I/O-bound tasks, caching strategies, and lazy loading.
-  - Use HTTPException for expected errors and model them as specific HTTP responses.
-  - Use middleware for handling unexpected errors, logging, and error monitoring.
-  - Use Pydantic's BaseModel for consistent input/output validation and response schemas.
-  
-  Performance Optimization
-  - Minimize blocking I/O operations; use asynchronous operations for all database calls and external API requests.
-  - Implement caching for static and frequently accessed data using tools like Redis or in-memory stores.
-  - Optimize data serialization and deserialization with Pydantic.
-  - Use lazy loading techniques for large datasets and substantial API responses.
-  
-  Key Conventions
-  1. Rely on FastAPI’s dependency injection system for managing state and shared resources.
-  2. Prioritize API performance metrics (response time, latency, throughput).
-  3. Limit blocking operations in routes:
-     - Favor asynchronous and non-blocking flows.
-     - Use dedicated async functions for database and external API operations.
-     - Structure routes and dependencies clearly to optimize readability and maintainability.
-  
-  Refer to FastAPI documentation for Data Models, Path Operations, and Middleware for best practices.
+# AGENTS.md — конвенции проекта speedtest
+
+Асинхронный CLI-спидтест на Python (aiohttp + tenacity), пакет `speedtest/`,
+тесты в `tests/`. Управление окружением — только через **uv**.
+
+## Запуск и проверки (обязательны перед сдачей работы)
+
+```console
+uv run ruff format speedtest tests
+uv run ruff check speedtest tests
+uv run pytest -q
+uv run pytest --cov=speedtest --cov-report=term-missing   # держим 100%
+```
+
+Живой смоук (уходит в интернет): `uv run speedtest -n 4 -a 1`.
+
+## Структура
+
+- `speedtest/core.py` — вся логика: скачивание, AIMD, метрики. **Без вывода
+  в консоль** (прогресс — через callback `on_wave`, логи — через `logging`).
+- `speedtest/cli.py` — argparse, валидация, стартовая строка, live-прогресс
+  и отчёт. Прогресс и стартовая строка → **stderr**; итоговый отчёт →
+  **stdout**.
+- `tests/conftest.py` — общий локальный `aiohttp.TestServer`
+  (фикстуры `run_with_server`, `app`, `body`). Тесты **не ходят в интернет**.
+
+## Стиль кода
+
+- Функции вместо классов; RORO (принял объект — вернул объект); чистые
+  функции там, где нет I/O; `def` для синхронного, `async def` для I/O.
+- Тип-хинты на все сигнатуры; Pydantic не нужен (нет моделей ввода).
+- Guard clauses и ранние return вместо вложенных if; без лишних else.
+- Описательные имена с вспомогательными глаголами/прилагательными
+  (`is_ok`, `is_improved`, `has_*`).
+- Файлы/директории — lowercase_with_underscores.
+
+## Документация
+
+- Все публичные функции и классы — Google-стиль докстрингов (ruff rule `D`).
+- Версию держать синхронно: `pyproject.toml` `[project].version` и
+  `speedtest/__init__.py.__version__`.
+
+## Линтеры
+
+ruff: `select = ["E", "F", "B", "I", "UP", "D", "SIM", "C4", "RUF", "PT"]`,
+`ignore = ["D401", "RUF001", "RUF002", "RUF003"]`, pydocstyle convention
+`google`, line-length 88.
+
+## Язык
+
+- Пользовательские строки CLI и докстринги — на **русском**.
+- Для русских существительных после числа — хелпер
+  `cli._plural(n, (форма1, форма2_5, форма5+))`, не «1 закачек».
+- Прогресс/отчёт-примеры в README держать свежими: перегенерировать живым
+  прогоном, не переписывать руками на глаз.
+
+## Зависимости
+
+Только `aiohttp` и `tenacity` в `[project]`; dev: `pytest`, `ruff`,
+`coverage`, `pytest-cov`. Новые зависимости не добавлять без явной
+необходимости; `requirements.txt` не использовать (есть `uv.lock`).
+
+## Git
+
+- Коммитить **только** файлы `speedtest/`; соседние проекты монорепо
+  (`2d_game/`, `beautify_json/`, `horror_game/`), `.opencode/`, `__pycache__`
+  не трогать.
+- Пуш отдельного репозитория — через subtree:
+  `git subtree split --prefix=speedtest -b speedtest-latest` из корня
+  монорепо, затем `git push <url> speedtest-latest:main`, затем удалить
+  ветку.

@@ -27,7 +27,6 @@ DEFAULT_REQUESTS = 10
 DEFAULT_ATTEMPTS = 3
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 10.0
-DEFAULT_CONNECTOR_LIMIT = 32
 
 
 def format_bytes(size: int) -> str:
@@ -79,9 +78,10 @@ def render_report(outcome: BenchmarkOutcome) -> str:
     speed = compute_mbps(total_bytes, elapsed)
 
     lines = ["", "--- результаты ---"]
-    lines.append(
+    header = (
         f"{'запрос':>6} | {'объём':>10} | {'время, с':>9} | {'попытки':>7} | статус"
     )
+    lines.append(header)
     for result in results:
         status = "ok" if result.is_ok else f"fail: {result.error}"
         size = format_bytes(result.bytes_downloaded) if result.is_ok else "-"
@@ -90,7 +90,7 @@ def render_report(outcome: BenchmarkOutcome) -> str:
             f"{result.request_id:>6} | {size:>10} | {duration:>9} "
             f"| {result.retry_count:>7} | {status}"
         )
-    lines.append("-" * 58)
+    lines.append("-" * len(header))
     lines.append(f"среднее время запроса (стабильная фаза): {average_time:.3f} с")
     lines.append(
         f"объём (стабильная фаза): {format_bytes(total_bytes)} ({total_bytes:,} байт)"
@@ -113,13 +113,15 @@ def _start_line(args: argparse.Namespace) -> str:
             attempts``).
 
     Returns:
-        Строка вида ``"старт замера: 10 закачек, параллельность от 1 до 4, до
-        3 попыток/закачка: <url>"``.
+        Строка вида ``"старт замера: 10 закачек, параллельность от 1 до 4,
+        максимум 3 попытки на закачку: <url>"``.
     """
+    requests_word = _plural(args.requests, ("закачка", "закачки", "закачек"))
+    attempts_word = _plural(args.attempts, ("попытка", "попытки", "попыток"))
     return (
-        f"старт замера: {args.requests} закачек, параллельность от "
-        f"{args.concurrency} до {min(MAX_CONCURRENCY, args.requests)}, до "
-        f"{args.attempts} попыток/закачка: {args.url}"
+        f"старт замера: {args.requests} {requests_word}, параллельность от "
+        f"{args.concurrency} до {min(MAX_CONCURRENCY, args.requests)}, "
+        f"максимум {args.attempts} {attempts_word} на закачку: {args.url}"
     )
 
 
@@ -144,7 +146,7 @@ def parse_args() -> argparse.Namespace:
         "url",
         nargs="?",
         default=DEFAULT_URL,
-        help="адрес ресурса (дефолт — тестовый файл 100 МБ на CacheFly CDN)",
+        help="адрес ресурса (дефолт — тестовый файл 100 MiB на CacheFly CDN)",
     )
     parser.add_argument(
         "--requests",
@@ -209,15 +211,40 @@ def parse_args() -> argparse.Namespace:
 def _enable_utf8_stdio() -> None:
     """Переключает stdout/stderr на UTF-8 на Windows (если ещё не UTF-8).
 
-    Ошибки перенастройки игнорируются: вывод просто остаётся в прежней кодировке.
+    Ошибки перенастройки (нет метода, отсутствующая/битая ``encoding``)
+    игнорируются: вывод просто остаётся в прежней кодировке.
     На не-Windows платформах ничего не делает.
     """
     if sys.platform != "win32":
         return
     for stream in (sys.stdout, sys.stderr):
-        if stream.encoding.lower() not in ("utf-8", "utf8"):
-            with contextlib.suppress(AttributeError, ValueError, OSError):
+        with contextlib.suppress(AttributeError, ValueError, OSError):
+            encoding = stream.encoding
+            if encoding and encoding.lower() not in ("utf-8", "utf8"):
                 stream.reconfigure(encoding="utf-8")
+
+
+def _plural(n: int, forms: tuple[str, str, str]) -> str:
+    """Подбирает русскую форму существительного для числа.
+
+    Args:
+        n: Число (абсолютное значение; знак не учитывается).
+        forms: Тройка форм ``(1, 2-4, 5+)`` — напр.
+            ``("закачка", "закачки", "закачек")``.
+
+    Returns:
+        Форма слова для ``n``: ``"1 закачка"``, ``"2 закачки"``, ``"5 закачек"``.
+    """
+    abs_n = abs(n) % 100
+    if 11 <= abs_n <= 14:
+        return forms[2]
+    match abs_n % 10:
+        case 1:
+            return forms[0]
+        case 2 | 3 | 4:
+            return forms[1]
+        case _:
+            return forms[2]
 
 
 def _progress_line(progress: WaveProgress) -> str:
@@ -228,12 +255,17 @@ def _progress_line(progress: WaveProgress) -> str:
 
     Returns:
         Строка вида ``"волна 3: 3/3 ok · 512.3 Мбит/с · cwnd 4→5"``; при ошибках
-        пишем ``"2 ok, 1 ошиб"``.
+        пишем ``"2 ok, 1 ошибка"``. Дробь всегда по текущей волне
+        (``ok / (ok + fail)``), не накопительному итогу замера.
     """
+    wave_total = progress.ok_count + progress.fail_count
     if progress.fail_count == 0:
-        status = f"{progress.ok_count}/{progress.done_requests} ok"
+        status = f"{progress.ok_count}/{wave_total} ok"
     else:
-        status = f"{progress.ok_count} ok, {progress.fail_count} ошиб"
+        status = (
+            f"{progress.ok_count} ok, {progress.fail_count} "
+            f"{_plural(progress.fail_count, ('ошибка', 'ошибки', 'ошибок'))}"
+        )
     return (
         f"волна {progress.wave_index}: {status} · {progress.wave_mbps:.1f} Мбит/с "
         f"· cwnd {progress.cwnd}→{progress.next_cwnd}"
@@ -310,6 +342,7 @@ async def main() -> int:
     logging.basicConfig(
         level=_log_level(args.verbose, args.quiet),
         format="%(levelname)s: %(message)s",
+        force=True,
     )
 
     progress = make_progress_writer(sys.stderr, not args.quiet, sys.stderr.isatty())
@@ -319,7 +352,7 @@ async def main() -> int:
         sys.stderr.flush()
 
     connector = aiohttp.TCPConnector(
-        limit=max(DEFAULT_CONNECTOR_LIMIT, args.requests, args.concurrency)
+        limit=max(MAX_CONCURRENCY, args.requests, args.concurrency)
     )
     async with aiohttp.ClientSession(
         connector=connector, headers={"User-Agent": DEFAULT_USER_AGENT}
@@ -342,7 +375,7 @@ async def main() -> int:
 
 
 def run() -> None:
-    """Точка входа ``python -m speedtest``: UTF-8 stdout и запуск ``main``.
+    """Точка входа ``python -m speedtest``: UTF-8 stdio и запуск ``main``.
 
     Raises:
         SystemExit: С кодом возврата ``main`` (0 — успех, 1 — все закачки упали).
