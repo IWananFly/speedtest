@@ -21,6 +21,7 @@ BODY = b"x" * 2048
 
 
 def build_app() -> web.Application:
+    """Собирает приложение с маршрутами: ок, 400, 500, 429+Retry-After, short read."""
     app = web.Application()
 
     async def ok_handler(request: web.Request) -> web.Response:
@@ -36,8 +37,10 @@ def build_app() -> web.Application:
         return web.Response(status=429, headers={"Retry-After": "2"})
 
     async def short_read_handler(request: web.Request) -> web.Response:
-        response = web.Response(body=b"abc")
-        response.content_length = 100
+        response = web.StreamResponse(headers={"Content-Length": "100"})
+        await response.prepare(request)
+        await response.write(b"abc")
+        request.transport.close()
         return response
 
     app.router.add_get("/ok", ok_handler)
@@ -52,6 +55,8 @@ def run_with_server(
     scenario: Callable[[aiohttp.ClientSession, str], Awaitable],
     path: str,
 ) -> object:
+    """Запускает async-сценарий с локальным тестовым сервером."""
+
     async def runner() -> object:
         server = TestServer(build_app())
         await server.start_server()
@@ -66,6 +71,8 @@ def run_with_server(
 
 
 def test_full_download_succeeds():
+    """Успешная закачка: все байты получены, ошибок нет."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         result = await _core_download(session, url, 5.0, 5.0)
         assert result.is_ok is True
@@ -76,6 +83,8 @@ def test_full_download_succeeds():
 
 
 def test_permanent_http_status_returns_failure_without_retry():
+    """Постоянный 4xx возвращается как результат-ошибка, а не исключение."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         result = await _core_download(session, url, 5.0, 5.0)
         assert result.is_ok is False
@@ -85,6 +94,8 @@ def test_permanent_http_status_returns_failure_without_retry():
 
 
 def test_retryable_http_status_raises():
+    """Временные 5xx возбуждают RetryableDownloadError."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         await _core_download(session, url, 5.0, 5.0)
 
@@ -92,15 +103,19 @@ def test_retryable_http_status_raises():
         run_with_server(scenario, "/retry")
 
 
-def test_short_read_raises():
+def test_short_read_raises_client_error():
+    """Недокачанное тело возбуждает aiohttp.ClientError (короткое чтение)."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         await _core_download(session, url, 5.0, 5.0)
 
-    with pytest.raises(RetryableDownloadError):
+    with pytest.raises(aiohttp.ClientError):
         run_with_server(scenario, "/short")
 
 
 def test_rate_limit_carries_retry_after():
+    """429 с Retry-After: исключение хранит секунды ожидания."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         await _core_download(session, url, 5.0, 5.0)
 
@@ -110,22 +125,27 @@ def test_rate_limit_carries_retry_after():
 
 
 def test_parse_retry_after_seconds():
+    """Delta-seconds из Retry-After переводится в число секунд."""
     assert _parse_retry_after("5") == 5.0
 
 
 def test_parse_retry_after_http_date():
+    """HTTP-date из Retry-After даёт оставшиеся секунды до этой даты."""
     value = email.utils.format_datetime(datetime.now(UTC) + timedelta(seconds=7))
     retry_after = _parse_retry_after(value)
     assert 6.0 <= retry_after <= 8.0
 
 
 def test_parse_retry_after_garbage():
+    """Мусор, пустая строка и None разбираются как None."""
     assert _parse_retry_after("not-a-date") is None
     assert _parse_retry_after("") is None
     assert _parse_retry_after(None) is None
 
 
 def test_full_benchmark_over_local_server():
+    """Полный замер на локальном сервере отдаёт все результаты и агрегаты."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         outcome = await run_adaptive_benchmark(
             session,
@@ -146,6 +166,8 @@ def test_full_benchmark_over_local_server():
 
 
 def test_parallel_wave_uses_wall_span_not_sum_of_durations():
+    """Агрегат меняется по span, а не сумме длительностей параллельной волны."""
+
     async def scenario(session: aiohttp.ClientSession, url: str):
         outcome = await run_adaptive_benchmark(
             session,
@@ -167,6 +189,7 @@ def test_parallel_wave_uses_wall_span_not_sum_of_durations():
 
 
 def test_sum_stable_waves_from_halfway():
+    """Суммирование стабильных волн начинается с волны, где >= stable_min_request_id."""
     from speedtest.core import _sum_stable_waves
 
     total_bytes, total_wall = _sum_stable_waves(

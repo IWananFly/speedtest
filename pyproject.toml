@@ -3,8 +3,20 @@ target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I", "UP"]
+select = ["E", "F", "B", "I", "UP", "D", "SIM", "C4", "RUF", "PT"]
+ignore = ["D401", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["speedtest"]
+branch = true
+omit = ["speedtest/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true

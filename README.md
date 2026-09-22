@@ -151,16 +151,21 @@ pyproject.toml        # конфиг ruff и pytest
 
 ```console
 python -m pytest -q
+python -m pytest --cov=speedtest --cov-report=term-missing   # покрытие
+python -m pytest --cov=speedtest --cov-report=html           # подробный HTML-отчёт
 ```
 
 Тесты не ходят в интернет: HTTP-сценарии разворачиваются на локальном
-`aiohttp.TestServer`.
+`aiohttp.TestServer`. Покрытие пакета держится на ~100%.
 
 ## Разработка
 
 ```console
-pip install pytest ruff
+pip install pytest ruff coverage pytest-cov
 python -m ruff format .
-python -m ruff check .
+python -m ruff check speedtest tests
 python -m pytest -q
 ```
+
+Линтеры: ruff с наборами правил `E, F, B, I, UP, D, SIM, C4, RUF, PT`
+(Google-стиль докстрингов через pydocstyle).

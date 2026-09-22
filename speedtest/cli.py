@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 
@@ -26,6 +27,15 @@ DEFAULT_CONNECTOR_LIMIT = 32
 
 
 def format_bytes(size: int) -> str:
+    """Приводит размер в байтах к читаемому виду с кратными единицами.
+
+    Args:
+        size: Количество байт (>= 0).
+
+    Returns:
+        ``"X.XX GiB"``/``"X.XX MiB"``/``"X.XX KiB"`` в зависимости от кратности;
+        значения < 1 KiB всё равно показываются как KiB.
+    """
     if size >= 1024**3:
         return f"{size / 1024**3:.2f} GiB"
     if size >= 1024**2:
@@ -34,6 +44,18 @@ def format_bytes(size: int) -> str:
 
 
 def render_report(outcome: BenchmarkOutcome) -> str:
+    """Собирает текстовый отчёт о замере.
+
+    Рисует таблицу закачек (объём, время, попытки, статус), сводки стабильной
+    фазы: среднее время запроса, агрегат объёма, успехи/ошибки, параметры
+    AIMD и итоговую агрегатную скорость в Мбит/с.
+
+    Args:
+        outcome: Итоги замера из ``run_adaptive_benchmark``.
+
+    Returns:
+        Многострочный отчёт для печати.
+    """
     results = outcome.results
     stable = [
         result
@@ -80,6 +102,17 @@ def render_report(outcome: BenchmarkOutcome) -> str:
 
 
 def parse_args() -> argparse.Namespace:
+    """Разбирает аргументы командной строки и валидирует их.
+
+    Описание и флаги: URL (позиционный, опциональный), ``--requests/-n``,
+    ``--concurrency/-c``, ``--attempts/-a``, ``--timeout``,
+    ``--connect-timeout``, ``--verbose/-v``. При невалидных значениях вызывает
+    ``parser.error`` (exit code 2).
+
+    Returns:
+        Namespace с параметрами: ``url, requests, concurrency, attempts,
+        timeout, connect_timeout, verbose``.
+    """
     parser = argparse.ArgumentParser(
         description="Асинхронный замер скорости интернета (параллельное "
         "скачивание ресурса)."
@@ -143,17 +176,28 @@ def parse_args() -> argparse.Namespace:
 
 
 def _enable_utf8_stdio() -> None:
+    """Переключает stdout/stderr на UTF-8 на Windows (если ещё не UTF-8).
+
+    Ошибки перенастройки игнорируются: вывод просто остаётся в прежней кодировке.
+    На не-Windows платформах ничего не делает.
+    """
     if sys.platform != "win32":
         return
     for stream in (sys.stdout, sys.stderr):
         if stream.encoding.lower() not in ("utf-8", "utf8"):
-            try:
+            with contextlib.suppress(AttributeError, ValueError, OSError):
                 stream.reconfigure(encoding="utf-8")
-            except (AttributeError, ValueError, OSError):
-                pass
 
 
 async def main() -> int:
+    """Полный прогон замера: аргументы, логика, печать отчёта.
+
+    Открывает клиентскую aiohttp-сессию с лимитом соединений, гоняет
+    ``run_adaptive_benchmark`` и печатает ``render_report``.
+
+    Returns:
+        0, если хотя бы одна закачка успешна, иначе 1.
+    """
     args = parse_args()
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -181,5 +225,10 @@ async def main() -> int:
 
 
 def run() -> None:
+    """Точка входа ``python -m speedtest``: UTF-8 stdout и запуск ``main``.
+
+    Raises:
+        SystemExit: С кодом возврата ``main`` (0 — успех, 1 — все закачки упали).
+    """
     _enable_utf8_stdio()
     raise SystemExit(asyncio.run(main()))
