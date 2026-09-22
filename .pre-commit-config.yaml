@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --directory speedtest ruff format speedtest tests
+        language: system
+        files: ^speedtest/.*\.py$
+        pass_filenames: false
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run --directory speedtest ruff check --fix speedtest tests
+        language: system
+        files: ^speedtest/.*\.py$
+        pass_filenames: false
+      - id: mypy
+        name: mypy speedtest
+        entry: uv run --directory speedtest mypy speedtest
+        language: system
+        files: ^speedtest/.*\.py$
+        pass_filenames: false
+      - id: pytest
+        name: pytest -q
+        entry: uv run --directory speedtest pytest -q
+        language: system
+        files: ^speedtest/.*\.py$
+        pass_filenames: false

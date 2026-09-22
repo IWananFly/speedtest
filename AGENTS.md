@@ -8,11 +8,16 @@
 ```console
 uv run ruff format speedtest tests
 uv run ruff check speedtest tests
+uv run mypy speedtest
 uv run pytest -q
 uv run pytest --cov=speedtest --cov-report=term-missing   # держим 100%
 ```
 
 Живой смоук (уходит в интернет): `uv run speedtest -n 4 -a 1`.
+
+Хуки: `uv run pre-commit install` — перед каждым коммитом гоняют
+`ruff format` → `ruff check --fix` → `mypy speedtest` → `pytest -q`
+(конфиг: `.pre-commit-config.yaml`, хуки `language: system` через `uv run`).
 
 ## Структура
 
@@ -42,9 +47,15 @@ uv run pytest --cov=speedtest --cov-report=term-missing   # держим 100%
 
 ## Линтеры
 
-ruff: `select = ["E", "F", "B", "I", "UP", "D", "SIM", "C4", "RUF", "PT"]`,
+ruff: `select = ["E", "F", "B", "I", "UP", "D", "SIM", "C4", "RUF", "PT",
+"S", "ANN", "RET", "PERF", "G", "N", "A", "PIE", "C90", "PLR0402"]`,
 `ignore = ["D401", "RUF001", "RUF002", "RUF003"]`, pydocstyle convention
-`google`, line-length 88.
+`google`, line-length 88. В `tests/**` дополнительно игнорируются
+`S101, SLF001, ARG, ANN001, ANN201, ANN202, ANN204` (assert, доступ к
+`_`-функциям, неподписанные фикстуры).
+
+mypy: `strict = true`, прогон только по библиотеке — `uv run mypy speedtest`
+(тесты не типизируются).
 
 ## Язык
 
@@ -57,8 +68,9 @@ ruff: `select = ["E", "F", "B", "I", "UP", "D", "SIM", "C4", "RUF", "PT"]`,
 ## Зависимости
 
 Только `aiohttp` и `tenacity` в `[project]`; dev: `pytest`, `ruff`,
-`coverage`, `pytest-cov`. Новые зависимости не добавлять без явной
-необходимости; `requirements.txt` не использовать (есть `uv.lock`).
+`coverage`, `pytest-cov`, `mypy`, `pre-commit`. Новые зависимости не
+добавлять без явной необходимости; `requirements.txt` не использовать
+(есть `uv.lock`).
 
 ## Git
 

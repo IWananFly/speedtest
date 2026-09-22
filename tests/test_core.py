@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import speedtest.core as core
+from speedtest import core
 from speedtest.core import (
     AimdStep,
     RetryableDownloadError,

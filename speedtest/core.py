@@ -48,7 +48,7 @@ class RetryableDownloadError(Exception):
             подождать перед повтором; ``None``, если сервер не указал ожидание.
     """
 
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
         """Инициализирует исключение и сохраняет подсказку времени повтора."""
         super().__init__(message)
         self.retry_after = retry_after
@@ -97,7 +97,8 @@ def _wait_for_retry_after(retry_state: RetryCallState) -> float:
     Returns:
         Секунды ожидания до следующей попытки.
     """
-    exception = retry_state.outcome.exception()
+    outcome = retry_state.outcome
+    exception = outcome.exception() if outcome else None
     if (
         isinstance(exception, RetryableDownloadError)
         and exception.retry_after is not None
@@ -235,7 +236,8 @@ def _to_failed_result(retry_state: RetryCallState) -> DownloadResult:
         Запись фейла с ``is_ok=False``, описанием последнего исключения и
         числом сделанных попыток.
     """
-    exc = retry_state.outcome.exception()
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome else None
     error = _describe_error(exc) if exc else "retries exhausted"
     return DownloadResult(
         request_id=0,
@@ -380,15 +382,15 @@ async def run_wave(
         async with semaphore:
             return await download_once(session, url)
 
-    results = list(
-        await asyncio.gather(
-            *(single_task() for _ in range(count)), return_exceptions=True
-        )
+    results = await asyncio.gather(
+        *(single_task() for _ in range(count)), return_exceptions=True
     )
-    for index, result in enumerate(results):
-        if isinstance(result, Exception):
-            results[index] = DownloadResult(0, 0, 0.0, False, repr(result), 1)
-    return results
+    return [
+        result
+        if isinstance(result, DownloadResult)
+        else DownloadResult(0, 0, 0.0, False, repr(result), 1)
+        for result in results
+    ]
 
 
 def aimd_next(

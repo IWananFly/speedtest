@@ -9,7 +9,7 @@ from io import StringIO
 import pytest
 from aiohttp.test_utils import TestServer
 
-import speedtest.cli as cli
+from speedtest import cli
 from speedtest.core import BenchmarkOutcome, DownloadResult, WaveProgress
 
 
@@ -247,6 +247,19 @@ def test_enable_utf8_stdio_ignores_reconfigure_errors(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "stdout", BrokenStream("cp1251"))
     monkeypatch.setattr(sys, "stderr", BrokenStream("cp1251"))
+
+    cli._enable_utf8_stdio()
+
+
+def test_enable_utf8_stdio_skips_streams_without_reconfigure(monkeypatch):
+    """Поток без метода reconfigure просто остаётся в прежней кодировке."""
+
+    class BareStream:
+        encoding = "cp1251"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdout", BareStream())
+    monkeypatch.setattr(sys, "stderr", BareStream())
 
     cli._enable_utf8_stdio()
 

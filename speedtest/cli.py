@@ -221,7 +221,9 @@ def _enable_utf8_stdio() -> None:
         with contextlib.suppress(AttributeError, ValueError, OSError):
             encoding = stream.encoding
             if encoding and encoding.lower() not in ("utf-8", "utf8"):
-                stream.reconfigure(encoding="utf-8")
+                reconfigure = getattr(stream, "reconfigure", None)
+                if reconfigure is not None:
+                    reconfigure(encoding="utf-8")
 
 
 def _plural(n: int, forms: tuple[str, str, str]) -> str:
