@@ -1,15 +1,17 @@
 """CLI: аргументы, отчёт, UTF-8 вывод и основной запуск."""
 
 import asyncio
+import logging
 import sys
 from argparse import Namespace
+from io import StringIO
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 import speedtest.cli as cli
-from speedtest.core import BenchmarkOutcome, DownloadResult
+from speedtest.core import BenchmarkOutcome, DownloadResult, WaveProgress
 
 BODY = b"y" * 4096
 
@@ -87,6 +89,7 @@ def test_parse_args_defaults(monkeypatch):
     assert args.timeout == cli.DEFAULT_READ_TIMEOUT
     assert args.connect_timeout == cli.DEFAULT_CONNECT_TIMEOUT
     assert args.verbose is False
+    assert args.quiet is False
 
 
 def test_parse_args_custom_values(monkeypatch):
@@ -107,7 +110,7 @@ def test_parse_args_custom_values(monkeypatch):
             "3.5",
             "--connect-timeout",
             "2",
-            "-v",
+            "-q",
         ],
     )
 
@@ -119,7 +122,17 @@ def test_parse_args_custom_values(monkeypatch):
     assert args.attempts == 4
     assert args.timeout == 3.5
     assert args.connect_timeout == 2
-    assert args.verbose is True
+    assert args.verbose is False
+    assert args.quiet is True
+
+
+def test_parse_args_rejects_quiet_with_verbose(monkeypatch):
+    """Одновременные --verbose и --quiet несовместимы (exit code 2)."""
+    monkeypatch.setattr(sys, "argv", ["speedtest", "-v", "-q"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.parse_args()
+    assert exc_info.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -204,8 +217,20 @@ def test_enable_utf8_stdio_ignores_reconfigure_errors(monkeypatch):
     cli._enable_utf8_stdio()
 
 
-def run_main_with_server(monkeypatch, path: str) -> int:
-    """Гоняет cli.main() против локального сервера по заданному маршруту."""
+class NonTtyStream(StringIO):
+    """Поток stderr для тестов main(): неинтерактивный (isatty() = False)."""
+
+    def isatty(self) -> bool:
+        """Сообщает, что поток не подключён к терминалу."""
+        return False
+
+
+def run_main_with_server(
+    monkeypatch, path: str, quiet: bool = False
+) -> tuple[int, str]:
+    """Гоняет cli.main() против локального сервера и возвращает (rc, stderr)."""
+    stderr = NonTtyStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
 
     async def runner() -> int:
         server = TestServer(build_app())
@@ -223,33 +248,47 @@ def run_main_with_server(monkeypatch, path: str) -> int:
                     timeout=5.0,
                     connect_timeout=5.0,
                     verbose=False,
+                    quiet=quiet,
                 ),
             )
             return await cli.main()
         finally:
             await server.close()
 
-    return asyncio.run(runner())
+    return asyncio.run(runner()), stderr.getvalue()
 
 
 def test_main_success_prints_report(monkeypatch, capsys):
-    """Успешный прогон возвращает 0 и печатает отчёт."""
-    rc = run_main_with_server(monkeypatch, "/ok")
+    """Успешный прогон возвращает 0, печатает отчёт и прогресс волн."""
+    rc, stderr = run_main_with_server(monkeypatch, "/ok")
     captured = capsys.readouterr().out
 
     assert rc == 0
     assert "--- результаты ---" in captured
     assert "успешно: 2 / 2" in captured
     assert "скорость:" in captured
+    assert "волна 1:" in stderr
+    assert "волна 2:" in stderr
 
 
 def test_main_all_failed_returns_one(monkeypatch, capsys):
     """Подряд фейлы дают код возврата 1."""
-    rc = run_main_with_server(monkeypatch, "/perm")
+    rc, _ = run_main_with_server(monkeypatch, "/perm")
     captured = capsys.readouterr().out
 
     assert rc == 1
     assert "успешно: 0 / 2" in captured
+
+
+def test_main_quiet_hides_progress(monkeypatch, capsys):
+    """Тихий режим убирает живые строки прогресса из stderr."""
+    rc, stderr = run_main_with_server(monkeypatch, "/ok", quiet=True)
+    captured = capsys.readouterr().out
+
+    assert rc == 0
+    assert "--- результаты ---" in captured
+    assert "волна" not in captured
+    assert "волна" not in stderr
 
 
 def test_run_exits_with_main_code(monkeypatch):
@@ -265,3 +304,90 @@ def test_run_exits_with_main_code(monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         cli.run()
     assert exc_info.value.code == 3
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected_level"),
+    [
+        (True, False, logging.DEBUG),
+        (False, True, logging.CRITICAL),
+        (False, False, logging.INFO),
+    ],
+)
+def test_log_level_selection(verbose, quiet, expected_level):
+    """Уровень лога определяется флагами -v/-q: DEBUG / CRITICAL / INFO."""
+    assert cli._log_level(verbose, quiet) == expected_level
+
+
+def make_wave_progress(
+    wave_index: int,
+    ok_count: int,
+    fail_count: int,
+    done_requests: int = 3,
+    *,
+    wave_mbps: float = 512.3,
+    cwnd: int = 4,
+    next_cwnd: int = 5,
+) -> WaveProgress:
+    """Собирает типовую сводку волны для тестов прогресса."""
+    return WaveProgress(
+        wave_index,
+        done_requests,
+        10,
+        ok_count,
+        fail_count,
+        cwnd,
+        next_cwnd,
+        wave_mbps,
+        480.0,
+        False,
+        False,
+    )
+
+
+def test_progress_line_all_ok():
+    """Формат строки прогресса при всех успехах."""
+    progress = make_wave_progress(3, 3, 0)
+    assert cli._progress_line(progress) == "волна 3: 3/3 ok · 512.3 Мбит/с · cwnd 4→5"
+
+
+def test_progress_line_with_failures():
+    """При ошибках статус перечисляет успешные и упавшие закачки."""
+    progress = make_wave_progress(2, 2, 1)
+    assert (
+        cli._progress_line(progress)
+        == "волна 2: 2 ok, 1 ошиб · 512.3 Мбит/с · cwnd 4→5"
+    )
+
+
+def test_make_progress_writer_disabled_returns_none():
+    """Выключенный прогресс возвращает None (без писателя)."""
+    assert cli.make_progress_writer(StringIO(), False, True) is None
+
+
+def test_make_progress_writer_writes_lines_when_not_live():
+    """Неинтерактивный поток получает строки с переводом; finish ничего не делает."""
+    stream = StringIO()
+    writer = cli.make_progress_writer(stream, True, False)
+
+    writer.write(make_wave_progress(1, 3, 0))
+    writer.write(make_wave_progress(2, 2, 1))
+    writer.finish()
+
+    assert stream.getvalue() == (
+        "волна 1: 3/3 ok · 512.3 Мбит/с · cwnd 4→5\n"
+        "волна 2: 2 ok, 1 ошиб · 512.3 Мбит/с · cwnd 4→5\n"
+    )
+
+
+def test_make_progress_writer_overwrites_in_place_when_live():
+    """Интерактивный поток пишет строку на месте и finish добавляет перевод."""
+    stream = StringIO()
+    writer = cli.make_progress_writer(stream, True, True)
+
+    writer.write(make_wave_progress(1, 3, 0))
+    writer.finish()
+
+    value = stream.getvalue()
+    assert value.startswith("\rволна 1: 3/3 ok · 512.3 Мбит/с · cwnd 4→5 ")
+    assert value.endswith("\n")

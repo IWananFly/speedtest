@@ -5,11 +5,14 @@ import asyncio
 import contextlib
 import logging
 import sys
+from types import SimpleNamespace
+from typing import TextIO
 
 import aiohttp
 
 from speedtest.core import (
     BenchmarkOutcome,
+    WaveProgress,
     compute_mbps,
     run_adaptive_benchmark,
 )
@@ -106,12 +109,13 @@ def parse_args() -> argparse.Namespace:
 
     Описание и флаги: URL (позиционный, опциональный), ``--requests/-n``,
     ``--concurrency/-c``, ``--attempts/-a``, ``--timeout``,
-    ``--connect-timeout``, ``--verbose/-v``. При невалидных значениях вызывает
-    ``parser.error`` (exit code 2).
+    ``--connect-timeout``, ``--verbose/-v``, ``--quiet/-q``. При невалидных
+    значениях (включая одновременные ``-v -q``) вызывает ``parser.error``
+    (exit code 2).
 
     Returns:
         Namespace с параметрами: ``url, requests, concurrency, attempts,
-        timeout, connect_timeout, verbose``.
+        timeout, connect_timeout, verbose, quiet``.
     """
     parser = argparse.ArgumentParser(
         description="Асинхронный замер скорости интернета (параллельное "
@@ -160,10 +164,18 @@ def parse_args() -> argparse.Namespace:
         "--verbose",
         "-v",
         action="store_true",
-        help="подробный лог (включая ретраи)",
+        help="отладка: каждая закачка, волны и ретраи",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="тихий режим: без живого прогресса и логов",
     )
     args = parser.parse_args()
 
+    if args.quiet and args.verbose:
+        parser.error("--quiet и --verbose несовместимы")
     if args.requests < 1:
         parser.error("--requests должен быть >= 1")
     if args.attempts < 1:
@@ -189,20 +201,99 @@ def _enable_utf8_stdio() -> None:
                 stream.reconfigure(encoding="utf-8")
 
 
+def _progress_line(progress: WaveProgress) -> str:
+    """Формирует одну строку live-прогресса волны.
+
+    Args:
+        progress: Сводка завершившейся волны из колбэка ``run_adaptive_benchmark``.
+
+    Returns:
+        Строка вида ``"волна 3: 3/3 ok · 512.3 Мбит/с · cwnd 4→5"``; при ошибках
+        пишем ``"2 ok, 1 ошиб"``.
+    """
+    if progress.fail_count == 0:
+        status = f"{progress.ok_count}/{progress.done_requests} ok"
+    else:
+        status = f"{progress.ok_count} ok, {progress.fail_count} ошиб"
+    return (
+        f"волна {progress.wave_index}: {status} · {progress.wave_mbps:.1f} Мбит/с "
+        f"· cwnd {progress.cwnd}→{progress.next_cwnd}"
+    )
+
+
+def make_progress_writer(
+    stream: TextIO,
+    enabled: bool,
+    live: bool,
+) -> SimpleNamespace | None:
+    r"""Собирает писатель прогресса волн в ``stream``.
+
+    Args:
+        stream: Поток вывода (обычно ``sys.stderr``).
+        enabled: Выводить ли прогресс; ``False`` → возвращает ``None``.
+        live: Интерактивный режим (терминал): строка переписывается через ``\r``;
+            иначе каждая волна пишется отдельной строкой с переводом.
+
+    Returns:
+        Объект с ``write(progress)`` и ``finish()`` (``finish`` доставляет
+        финальный перевод строки после переписываний) или ``None``.
+    """
+    if not enabled:
+        return None
+    overwritten: list[bool] = []
+
+    def write(progress: WaveProgress) -> None:
+        line = _progress_line(progress)
+        if live:
+            stream.write(f"\r{line}{' ' * 40}")
+            overwritten.append(True)
+        else:
+            stream.write(f"{line}\n")
+        stream.flush()
+
+    def finish() -> None:
+        if overwritten:
+            stream.write("\n")
+            stream.flush()
+
+    return SimpleNamespace(write=write, finish=finish)
+
+
+def _log_level(verbose: bool, quiet: bool) -> int:
+    """Выбирает уровень логирования по флагам CLI.
+
+    Args:
+        verbose: Включён ли ``--verbose``.
+        quiet: Включён ли ``--quiet``.
+
+    Returns:
+        DEBUG при verbose, CRITICAL при quiet, иначе INFO (``parse_args``
+        запрещает одновременные ``-v -q``).
+    """
+    if verbose:
+        return logging.DEBUG
+    if quiet:
+        return logging.CRITICAL
+    return logging.INFO
+
+
 async def main() -> int:
     """Полный прогон замера: аргументы, логика, печать отчёта.
 
     Открывает клиентскую aiohttp-сессию с лимитом соединений, гоняет
-    ``run_adaptive_benchmark`` и печатает ``render_report``.
+    ``run_adaptive_benchmark`` с live-прогрессом волн (в ``sys.stderr``, если
+    не включён ``--quiet``) и печатает ``render_report`` в stdout.
 
     Returns:
         0, если хотя бы одна закачка успешна, иначе 1.
     """
     args = parse_args()
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=_log_level(args.verbose, args.quiet),
         format="%(levelname)s: %(message)s",
     )
+
+    progress = make_progress_writer(sys.stderr, not args.quiet, sys.stderr.isatty())
 
     connector = aiohttp.TCPConnector(
         limit=max(DEFAULT_CONNECTOR_LIMIT, args.requests, args.concurrency)
@@ -218,7 +309,10 @@ async def main() -> int:
             args.attempts,
             args.timeout,
             args.connect_timeout,
+            on_wave=progress.write if progress is not None else None,
         )
+        if progress is not None:
+            progress.finish()
 
     print(render_report(outcome))
     return 0 if any(result.is_ok for result in outcome.results) else 1

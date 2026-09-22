@@ -160,6 +160,37 @@ class AimdStep:
 
 
 @dataclass(frozen=True)
+class WaveProgress:
+    """Live-сводка одной завершившейся волны для колбэка прогресса.
+
+    Attributes:
+        wave_index: Номер волны (1-based) в порядке запуска.
+        done_requests: Всего запросов завершено к моменту окончания волны.
+        total_requests: Запланированное число закачек всего замера.
+        ok_count: Успешных закачек в волне.
+        fail_count: Неуспешных закачек в волне.
+        cwnd: Параллельность этой волны.
+        next_cwnd: Параллельность следующей волны (решение AIMD).
+        wave_mbps: Агрегатная пропускная способность волны, Мбит/с.
+        ewma_mbps: Сглаженная пропускная способность после шага, Мбит/с.
+        is_improved: Признак разгона (AI).
+        is_degraded: Признак деградации (ошибки или регресс tp).
+    """
+
+    wave_index: int
+    done_requests: int
+    total_requests: int
+    ok_count: int
+    fail_count: int
+    cwnd: int
+    next_cwnd: int
+    wave_mbps: float
+    ewma_mbps: float
+    is_improved: bool
+    is_degraded: bool
+
+
+@dataclass(frozen=True)
 class BenchmarkOutcome:
     """Итоги всего замера: все закачки и агрегаты стабильной фазы.
 
@@ -297,6 +328,13 @@ def make_download_once(
         _attempt_counter.set(_attempt_counter.get() + 1)
         result = await _core_download(session, url, read_timeout, connect_timeout)
         result.retry_count = max(1, _attempt_counter.get())
+        logger.debug(
+            "закачка: %s байт за %.3f с (%s, попыток %s)",
+            result.bytes_downloaded,
+            result.duration_seconds,
+            "ok" if result.is_ok else result.error,
+            result.retry_count,
+        )
         return result
 
     return download
@@ -397,6 +435,7 @@ async def run_adaptive_benchmark(
     attempts: int,
     read_timeout: float,
     connect_timeout: float,
+    on_wave: Callable[[WaveProgress], None] | None = None,
 ) -> BenchmarkOutcome:
     """Онлайн-AIMD замер: закачки одновременно и замер, и драйвер адаптации.
 
@@ -413,6 +452,8 @@ async def run_adaptive_benchmark(
         attempts: Максимум попыток на каждую закачку.
         read_timeout: Таймаут чтения тела.
         connect_timeout: Таймаут установки соединения.
+        on_wave: Опциональный колбэк ``callback(wave)``, вызываемый после
+            каждой волны со сводкой ``WaveProgress``; ``None`` — не вызывать.
 
     Returns:
         Итоги замера: все результаты и агрегаты стабильной фазы.
@@ -474,7 +515,24 @@ async def run_adaptive_benchmark(
             best_ewma = step.ewma
             best_cwnd = cwnd
 
-        logger.info(
+        if on_wave is not None:
+            on_wave(
+                WaveProgress(
+                    len(wave_start_request_ids),
+                    next_request_id - 1,
+                    requests,
+                    len(successes),
+                    len(wave) - len(successes),
+                    cwnd,
+                    step.new_cwnd,
+                    wave_tp * 8 / 1e6,
+                    step.ewma * 8 / 1e6,
+                    step.is_improved,
+                    step.is_degraded,
+                )
+            )
+
+        logger.debug(
             "волна cwnd=%s → %s (tp=%s Мбит/с, ewma=%s Мбит/с, ошибки=%s%%)%s",
             cwnd,
             step.new_cwnd,

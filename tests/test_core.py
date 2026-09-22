@@ -176,3 +176,41 @@ def test_benchmark_plateau_sets_stable_min_inside_loop(monkeypatch):
         assert outcome.stable_bytes == 2 * len(BODY)
 
     run_with_server(scenario, "/ok")
+
+
+def test_benchmark_calls_on_wave_callback(monkeypatch):
+    """Колбэк on_wave получает сводку каждой волны в порядке запуска."""
+
+    def fake_aimd(cwnd, wave_tp, ewma_prev, error_ratio, max_cwnd, best_cwnd):
+        return AimdStep(max(1, cwnd // 2), 1.0, False, True)
+
+    monkeypatch.setattr(core, "aimd_next", fake_aimd)
+    waves: list[object] = []
+
+    async def scenario(session: object, url: str):
+        await run_adaptive_benchmark(
+            session,
+            url,
+            requests=3,
+            start_cwnd=2,
+            attempts=1,
+            read_timeout=5.0,
+            connect_timeout=5.0,
+            on_wave=waves.append,
+        )
+
+    run_with_server(scenario, "/ok")
+
+    assert len(waves) == 2
+    first, second = waves
+    assert first.wave_index == 1
+    assert first.done_requests == 2
+    assert first.total_requests == 3
+    assert first.ok_count == 2
+    assert first.fail_count == 0
+    assert first.cwnd == 2
+    assert first.next_cwnd == 1
+    assert first.is_degraded is True
+    assert second.wave_index == 2
+    assert second.done_requests == 3
+    assert second.ok_count == 1
