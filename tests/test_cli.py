@@ -135,6 +135,30 @@ def test_parse_args_rejects_quiet_with_verbose(monkeypatch):
     assert exc_info.value.code == 2
 
 
+def test_start_line_content():
+    """Стартовая строка описывает параметры замера."""
+    args = Namespace(
+        url="http://example.test/file.bin",
+        requests=10,
+        concurrency=2,
+        attempts=3,
+    )
+    line = cli._start_line(args)
+
+    assert line.startswith("старт замера:")
+    assert "10 закачек" in line
+    assert "от 2 до 10" in line
+    assert "до 3 попыток/закачка" in line
+    assert "http://example.test/file.bin" in line
+
+
+def test_start_line_caps_parallelism_by_requests():
+    """Потолок параллельности не выше числа закачек (min(32, requests))."""
+    args = Namespace(url="http://example.test", requests=4, concurrency=1, attempts=1)
+
+    assert "от 1 до 4" in cli._start_line(args)
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -267,6 +291,7 @@ def test_main_success_prints_report(monkeypatch, capsys):
     assert "--- результаты ---" in captured
     assert "успешно: 2 / 2" in captured
     assert "скорость:" in captured
+    assert "старт замера:" in stderr
     assert "волна 1:" in stderr
     assert "волна 2:" in stderr
 
@@ -287,7 +312,9 @@ def test_main_quiet_hides_progress(monkeypatch, capsys):
 
     assert rc == 0
     assert "--- результаты ---" in captured
+    assert "старт замера" not in captured
     assert "волна" not in captured
+    assert "старт замера" not in stderr
     assert "волна" not in stderr
 
 

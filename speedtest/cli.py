@@ -11,6 +11,7 @@ from typing import TextIO
 import aiohttp
 
 from speedtest.core import (
+    MAX_CONCURRENCY,
     BenchmarkOutcome,
     WaveProgress,
     compute_mbps,
@@ -102,6 +103,24 @@ def render_report(outcome: BenchmarkOutcome) -> str:
     lines.append(f"скорость: {speed:.2f} Мбит/с")
     lines.append(f"общее время выполнения: {outcome.total_wall_seconds:.3f} с")
     return "\n".join(lines)
+
+
+def _start_line(args: argparse.Namespace) -> str:
+    """Формирует стартовую строку замера.
+
+    Args:
+        args: Разобранные аргументы CLI (``url, requests, concurrency,
+            attempts``).
+
+    Returns:
+        Строка вида ``"старт замера: 10 закачек, параллельность от 1 до 4, до
+        3 попыток/закачка: <url>"``.
+    """
+    return (
+        f"старт замера: {args.requests} закачек, параллельность от "
+        f"{args.concurrency} до {min(MAX_CONCURRENCY, args.requests)}, до "
+        f"{args.attempts} попыток/закачка: {args.url}"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -294,6 +313,10 @@ async def main() -> int:
     )
 
     progress = make_progress_writer(sys.stderr, not args.quiet, sys.stderr.isatty())
+
+    if not args.quiet:
+        sys.stderr.write(_start_line(args) + "\n")
+        sys.stderr.flush()
 
     connector = aiohttp.TCPConnector(
         limit=max(DEFAULT_CONNECTOR_LIMIT, args.requests, args.concurrency)
